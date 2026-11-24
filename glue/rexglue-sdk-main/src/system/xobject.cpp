@@ -11,7 +11,16 @@
 
 #include <vector>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#include <pthread.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#include <cerrno>
+#endif
+
 #include <rex/chrono/clock.h>
+#include <rex/cvar.h>
 #include <rex/diagnostics/android_trace.h>
 #include <rex/stream.h>
 #include <rex/system/kernel_state.h>
@@ -28,9 +37,24 @@
 #include <rex/system/xsymboliclink.h>
 #include <rex/system/xthread.h>
 
+REXCVAR_DEFINE_BOOL(android_audio_signal_boost, true, "Audio",
+                    "Android: a game thread that keeps waking the audio mixer runs at audio "
+                    "priority, so busy render and game threads cannot starve the mixer (audio "
+                    "gaps). Applies to at most 4 threads, each logged as audio-signal-boost")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace rex::system {
 
 namespace {
+
+#if defined(__ANDROID__)
+// Android's ANDROID_PRIORITY_AUDIO, as used by the audio worker and XMA decoder.
+constexpr int kAudioNice = -16;
+// Signals of mixer-awaited objects before a thread counts as the mixer's
+// producer; one-off signallers (pause, shutdown) never get there.
+constexpr uint32_t kSignalsBeforeBoost = 32;
+constexpr uint32_t kMaxBoostedThreads = 4;
+#endif
 
 // Trace section name for a guest wait made inside the audio callback, by the
 // kind of object waited on. Null (not traced) on every other thread.
@@ -55,6 +79,34 @@ const char* GuestWaitTraceName(XObject::Type type) {
 }
 
 }  // namespace
+
+void XObject::BoostAudioSignaler() {
+#if defined(__ANDROID__)
+  // The title's mixer waits on objects that one of its own threads signals for
+  // every audio block. That thread had no priority over the busy render and
+  // game threads and spent over a third of its time waiting for a core while
+  // the mixer, and so the audio output, starved.
+  thread_local uint32_t signals = 0;
+  if (++signals != kSignalsBeforeBoost || !REXCVAR_GET(android_audio_signal_boost)) {
+    return;
+  }
+  const pid_t tid = gettid();
+  errno = 0;
+  const int current_nice = getpriority(PRIO_PROCESS, tid);
+  if (errno == 0 && current_nice <= kAudioNice) {
+    return;  // The audio worker and XMA decoder already run at audio priority.
+  }
+  static std::atomic<uint32_t> boosted_threads{0};
+  if (boosted_threads.fetch_add(1, std::memory_order_relaxed) >= kMaxBoostedThreads) {
+    return;
+  }
+  const int result = setpriority(PRIO_PROCESS, tid, kAudioNice);
+  char name[16] = {};
+  pthread_getname_np(pthread_self(), name, sizeof(name));
+  __android_log_print(ANDROID_LOG_WARN, "LibertyRecomp", "audio-signal-boost %s tid=%d nice=%d %s",
+                      name, int(tid), kAudioNice, result == 0 ? "ok" : "failed");
+#endif
+}
 
 XObject::XObject(Type type) : kernel_state_(nullptr), pointer_ref_count_(1), type_(type) {
   handles_.reserve(10);
@@ -240,6 +292,9 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
                                 : std::chrono::milliseconds::max();
 
   XThread::CheckTitleTermination();
+  if (diagnostics::android_trace::in_audio_callback) {
+    MarkAudioCritical();
+  }
   auto result = [&] {
     diagnostics::android_trace::Section trace(GuestWaitTraceName(type_));
     return rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
@@ -269,6 +324,9 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
                                       TimeoutTicksToMs(*opt_timeout)))
                                 : std::chrono::milliseconds::max();
 
+  if (diagnostics::android_trace::in_audio_callback) {
+    wait_object->MarkAudioCritical();
+  }
   auto result = [&] {
     diagnostics::android_trace::Section trace(
         diagnostics::android_trace::AudioCallbackWaitName("audio:guest-signal-and-wait"));
@@ -300,6 +358,9 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
   for (size_t i = 0; i < count; ++i) {
     wait_handles[i] = objects[i]->GetWaitHandle();
     assert_not_null(wait_handles[i]);
+    if (diagnostics::android_trace::in_audio_callback) {
+      objects[i]->MarkAudioCritical();
+    }
   }
 
   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(

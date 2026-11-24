@@ -121,6 +121,7 @@ inline constexpr auto kRegistry = std::to_array<Entry>({
     {"gta4_extra_frames_in_flight", Kind::kShortcut, "0", "title runs ahead of its two pending frames"},
     {"gta4_thread_pinning", Kind::kShortcut, "0", "busiest threads pinned to big cores"},
     {"android_pin_hot_threads", Kind::kShortcut, "false", "hot threads pinned"},
+    {"android_audio_signal_boost", Kind::kShortcut, "false", "threads waking the audio mixer run at audio priority"},
     {"kernel_spinlock_spins", Kind::kShortcut, "0", "guest spinlocks spin before yielding"},
     {"android_perf_hint", Kind::kShortcut, "false", "Android performance hint session"},
     {"android_perf_hint_target_ms", Kind::kSetting, "", "performance hint target"},

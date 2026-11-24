@@ -13,9 +13,9 @@
 
 namespace rex::diagnostics::android_trace {
 
-// Set on the audio worker while it runs the title's mixer callback, so guest
-// waits made from inside the callback can be marked without tracing every
-// guest thread.
+// Set on the audio worker while it runs the title's mixer callback. Guest waits
+// made from inside the callback are traced, and the objects they wait on are
+// marked so their signalling threads can get audio priority.
 inline thread_local bool in_audio_callback = false;
 
 #if defined(__ANDROID__)

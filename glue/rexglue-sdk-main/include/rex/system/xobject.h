@@ -189,6 +189,10 @@ class XObject {
 
   void SetAttributes(uint32_t obj_attributes_ptr);
 
+  // Marks an object the title's audio mixer waits on, so threads that keep
+  // signalling it can be given audio priority (see BoostAudioSignaler).
+  void MarkAudioCritical() { audio_critical_.store(true, std::memory_order_relaxed); }
+
   X_STATUS Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
                 uint64_t* opt_timeout);
   static X_STATUS SignalAndWait(XObject* signal_object, XObject* wait_object, uint32_t wait_reason,
@@ -210,6 +214,14 @@ class XObject {
   // Called on successful wait.
   virtual void WaitCallback() {}
   virtual rex::thread::WaitHandle* GetWaitHandle() { return nullptr; }
+
+  // Called by the signalling paths (event set/pulse, semaphore release).
+  void OnSignal() {
+    if (audio_critical_.load(std::memory_order_relaxed)) {
+      BoostAudioSignaler();
+    }
+  }
+  static void BoostAudioSignaler();
 
   // Creates the kernel object for guest code to use. Typically not needed.
   uint8_t* CreateNative(uint32_t size);
@@ -235,6 +247,7 @@ class XObject {
 
  private:
   std::atomic<int32_t> pointer_ref_count_;
+  std::atomic<bool> audio_critical_{false};
 
   Type type_;
   std::vector<X_HANDLE> handles_;
