@@ -256,3 +256,23 @@ It needs a PC with the repository and adb. `os/android/scripts/gpu_counters.sh` 
 
 When comparing settings, measure in the same place at the same time of day. Night scenes and day
 scenes load the GPU very differently, and shadows are only visible in daylight.
+
+### Tracing audio stutter
+
+The runtime writes Android system-trace markers for the audio pipeline. They show up in a
+*Developer options > System Tracing* capture (enable *Trace debuggable applications*; the APK from
+`build_apk.sh` is a debug build) or in any Perfetto capture with app tracing:
+
+| Marker | Meaning |
+|---|---|
+| `audio:wait-free-block` | The audio worker waits for room in the output queue. |
+| `audio:guest-mixer` | The game's mixer callback, which produces one audio block. |
+| `audio:guest-wait …`, `audio:guest-sleep`, `audio:guest-critical-section` | Waits the game's mixer makes on other game threads, by object type. Only waits inside the mixer are marked. |
+| `xma:decode` | Decoding one XMA context. |
+| `audio:output-callback` | Android's audio thread taking blocks from the queue. |
+| `audio:queued-blocks` (counter) | Blocks ready for output. At 0 the output plays silence. |
+| `audio:silence-blocks` (counter) | Running total of silent blocks; each step is an audible gap. |
+
+A step in `audio:silence-blocks` shows when a gap happened; the audio worker's track at that moment
+shows whether it was waiting for queue space, running the mixer, or blocked inside the mixer on
+another game thread.

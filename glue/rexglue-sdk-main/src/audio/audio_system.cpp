@@ -24,6 +24,7 @@
 #include <rex/audio/flags.h>
 #include <rex/audio/xma/decoder.h>
 #include <rex/dbg.h>
+#include <rex/diagnostics/android_trace.h>
 #include <rex/diagnostics/gta4_transition.h>
 #include <rex/logging.h>
 #include <rex/math.h>
@@ -143,9 +144,11 @@ void AudioSystem::WorkerThreadMain() {
         diagnostics::gta4_transition::EventSource::kAudio,
         diagnostics::gta4_transition::EventType::kAudioWaitBegin);
     const uint64_t handoff_wait_begin = handoff::Enabled() ? handoff::Clock() : 0;
-    auto result = rex::thread::WaitAny(
-        wait_handles_, rex::countof(wait_handles_), true,
-        std::chrono::milliseconds(500));
+    auto result = [&] {
+      diagnostics::android_trace::Section trace("audio:wait-free-block");
+      return rex::thread::WaitAny(wait_handles_, rex::countof(wait_handles_), true,
+                                  std::chrono::milliseconds(500));
+    }();
     diagnostics::gta4_transition::RecordSteady(
         diagnostics::gta4_transition::EventSource::kAudio,
         diagnostics::gta4_transition::EventType::kAudioWaitEnd, 0, 0, 0,
@@ -211,8 +214,13 @@ void AudioSystem::WorkerThreadMain() {
             client_callback_arg);
         handoff::Span handoff_callback("guest-mixer", index, client_callback, client_callback_arg);
         uint64_t args[] = {client_callback_arg};
-        function_dispatcher_->Execute(worker_thread_->thread_state(), client_callback, args,
-                                      rex::countof(args));
+        {
+          diagnostics::android_trace::Section trace("audio:guest-mixer");
+          diagnostics::android_trace::in_audio_callback = true;
+          function_dispatcher_->Execute(worker_thread_->thread_state(), client_callback, args,
+                                        rex::countof(args));
+          diagnostics::android_trace::in_audio_callback = false;
+        }
         diagnostics::gta4_transition::RecordSteady(
             diagnostics::gta4_transition::EventSource::kAudio,
             diagnostics::gta4_transition::EventType::kAudioCallbackEnd,

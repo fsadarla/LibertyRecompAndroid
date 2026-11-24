@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <rex/chrono/clock.h>
+#include <rex/diagnostics/android_trace.h>
 #include <rex/stream.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/string_utils.h>  // For TranslateAnsiStringAddress
@@ -28,6 +29,32 @@
 #include <rex/system/xthread.h>
 
 namespace rex::system {
+
+namespace {
+
+// Trace section name for a guest wait made inside the audio callback, by the
+// kind of object waited on. Null (not traced) on every other thread.
+const char* GuestWaitTraceName(XObject::Type type) {
+  if (!diagnostics::android_trace::in_audio_callback) {
+    return nullptr;
+  }
+  switch (type) {
+    case XObject::Type::Event:
+      return "audio:guest-wait event";
+    case XObject::Type::Semaphore:
+      return "audio:guest-wait semaphore";
+    case XObject::Type::Mutant:
+      return "audio:guest-wait mutant";
+    case XObject::Type::Thread:
+      return "audio:guest-wait thread";
+    case XObject::Type::Timer:
+      return "audio:guest-wait timer";
+    default:
+      return "audio:guest-wait other";
+  }
+}
+
+}  // namespace
 
 XObject::XObject(Type type) : kernel_state_(nullptr), pointer_ref_count_(1), type_(type) {
   handles_.reserve(10);
@@ -213,7 +240,10 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
                                 : std::chrono::milliseconds::max();
 
   XThread::CheckTitleTermination();
-  auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
+  auto result = [&] {
+    diagnostics::android_trace::Section trace(GuestWaitTraceName(type_));
+    return rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
+  }();
   XThread::CheckTitleTermination();
   switch (result) {
     case rex::thread::WaitResult::kSuccess:
@@ -239,9 +269,13 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
                                       TimeoutTicksToMs(*opt_timeout)))
                                 : std::chrono::milliseconds::max();
 
-  auto result =
-      rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
-                                 alertable ? true : false, timeout_ms);
+  auto result = [&] {
+    diagnostics::android_trace::Section trace(
+        diagnostics::android_trace::AudioCallbackWaitName("audio:guest-signal-and-wait"));
+    return rex::thread::SignalAndWait(signal_object->GetWaitHandle(),
+                                      wait_object->GetWaitHandle(), alertable ? true : false,
+                                      timeout_ms);
+  }();
   switch (result) {
     case rex::thread::WaitResult::kSuccess:
       wait_object->WaitCallback();
@@ -273,6 +307,8 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
                                 : std::chrono::milliseconds::max();
 
   XThread::CheckTitleTermination();
+  diagnostics::android_trace::Section trace(
+      diagnostics::android_trace::AudioCallbackWaitName("audio:guest-wait multiple"));
   if (wait_type) {
     auto result =
         rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false, timeout_ms);

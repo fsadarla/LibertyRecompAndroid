@@ -22,6 +22,7 @@
 #include <rex/audio/xma/decoder.h>
 #include <rex/cvar.h>
 #include <rex/dbg.h>
+#include <rex/diagnostics/android_trace.h>
 #include <rex/diagnostics/gta4_transition.h>
 #include <rex/logging.h>
 #include <rex/perf/counter.h>
@@ -182,7 +183,11 @@ void XmaDecoder::WorkerThreadMain() {
             diagnostics::gta4_transition::EventType::kXmaContextBegin, 0, 0,
             0, diagnostics::gta4_transition::kFlagBefore, context_index,
             context.guest_ptr(), word_index);
-        const bool worked = context.Work();
+        bool worked;
+        {
+          diagnostics::android_trace::Section trace("xma:decode");
+          worked = context.Work();
+        }
         if (worked) {
           context.SignalWorkDone();
           PROFILE_XMA_FRAME_DECODED();

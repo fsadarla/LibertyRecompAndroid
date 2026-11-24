@@ -19,6 +19,7 @@
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/dbg.h>
+#include <rex/diagnostics/android_trace.h>
 #include <rex/perf/counter.h>
 #include <rex/literals.h>
 #include <rex/logging.h>
@@ -1086,6 +1087,8 @@ uint32_t XThread::SelfSuspend() {
 #endif
 
 X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t interval) {
+  diagnostics::android_trace::Section trace(
+      diagnostics::android_trace::AudioCallbackWaitName("audio:guest-sleep"));
   int64_t timeout_ticks = interval;
   uint32_t timeout_ms;
   if (timeout_ticks > 0) {

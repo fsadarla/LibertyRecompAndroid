@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -21,6 +22,7 @@
 #include <rex/audio/sdl/sdl_audio_driver.h>
 #include <rex/cvar.h>
 #include <rex/dbg.h>
+#include <rex/diagnostics/android_trace.h>
 #include <rex/logging.h>
 #include <rex/perf/counter.h>
 #include <SDL3/SDL.h>
@@ -200,6 +202,8 @@ void SDLAudioDriver::SubmitFrame(uint32_t frame_ptr) {
     std::unique_lock<std::mutex> guard(frames_mutex_);
     frames_queued_.push(output_frame);
     PROFILE_BUFFER_QUEUE_DEPTH(static_cast<int64_t>(frames_queued_.size()));
+    diagnostics::android_trace::SetCounter("audio:queued-blocks",
+                                           static_cast<int64_t>(frames_queued_.size()));
   }
 }
 
@@ -277,6 +281,7 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
     return;
   }
   const auto driver = static_cast<SDLAudioDriver*>(userdata);
+  diagnostics::android_trace::Section trace("audio:output-callback");
   const int sample_count =
       static_cast<int>(channel_samples_ * std::max<uint8_t>(driver->sdl_device_channels_, 1));
   const int len = static_cast<int>(sizeof(float) * sample_count);
@@ -290,6 +295,8 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
   // producer from an output-side problem.
   static uint32_t silent_fills = 0;
   static uint32_t filled = 0;
+  // Running total for the system trace; a step in it marks each gap.
+  static std::atomic<int64_t> total_silent_fills = 0;
   static auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (additional_amount > 0) {
     static uint32_t sdl_callback_count = 0;
@@ -304,6 +311,8 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
     }
     if (driver->frames_queued_.empty()) {
       ++silent_fills;
+      diagnostics::android_trace::SetCounter(
+          "audio:silence-blocks", total_silent_fills.fetch_add(1, std::memory_order_relaxed) + 1);
       if (sdl_callback_count < 10) {
         REXAPU_DEBUG("SDLCallback: no frames queued (silence)");
         sdl_callback_count++;
@@ -318,6 +327,8 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
       ++filled;
       auto buffer = driver->frames_queued_.front();
       driver->frames_queued_.pop();
+      diagnostics::android_trace::SetCounter("audio:queued-blocks",
+                                             static_cast<int64_t>(driver->frames_queued_.size()));
       if (REXCVAR_GET(audio_mute)) {
         std::memset(data, 0, len);
       } else {

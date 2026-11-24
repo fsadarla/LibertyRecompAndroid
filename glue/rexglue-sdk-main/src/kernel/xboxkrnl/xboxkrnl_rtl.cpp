@@ -16,6 +16,7 @@
 #include <string>
 
 #include <rex/chrono/chrono_steady_cast.h>
+#include <rex/diagnostics/android_trace.h>
 #include <rex/kernel/xboxkrnl/private.h>
 #include <rex/kernel/xboxkrnl/rtl.h>
 #include <rex/kernel/xboxkrnl/threading.h>
@@ -399,6 +400,8 @@ void RtlEnterCriticalSection_entry(ppc_ptr_t<X_RTL_CRITICAL_SECTION> cs) {
 
   if (rex::thread::atomic_inc(&cs->lock_count) != 0) {
     // Create a full waiter.
+    rex::diagnostics::android_trace::Section trace(
+        rex::diagnostics::android_trace::AudioCallbackWaitName("audio:guest-critical-section"));
     xeKeWaitForSingleObject(reinterpret_cast<void*>(cs.host_address()), 8, 0, 0, nullptr);
   }
 
